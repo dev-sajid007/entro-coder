@@ -8,7 +8,7 @@ const PROTECTED_PATHS = [
 ];
 
 const DANGEROUS_COMMANDS = [
-  /rm\s+-(rf|-fr)/i,
+  /rm\s+-(fr|rf)\b/i,
   /dd\s+if=/i,
   /mkfs/i,
   /fdisk/i,
@@ -18,11 +18,11 @@ const DANGEROUS_COMMANDS = [
   /chmod\s+[0-7]*7/i,
   /chown.*:\s*$/i,
   /wget\s+-O/i,
-  /curl\s+-[A-Z]\s+>/i,
-  >/dev/sda/i,
-  >/dev/sdb/i,
-  >\bsh\b$/i,
-  >\bbash\b$/i,
+  /curl\s+-[A-Z]\s*>/i,
+  />\s*\/dev\/sda/i,
+  />\s*\/dev\/sdb/i,
+  /\bsh\s*$/i,
+  /\bbash\s*$/i,
 ];
 
 export function validatePath(

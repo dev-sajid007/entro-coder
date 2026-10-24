@@ -8,11 +8,11 @@ export interface ListFilesOptions {
   maxDepth?: number;
 }
 
-export async function listFiles(
+export function listFiles(
   targetPath: string,
   projectRoot: string,
   options?: ListFilesOptions
-): Promise<string[]> {
+): string[] {
   const error = validatePath(targetPath, projectRoot);
   if (error) throw new Error(`Security: ${error}`);
 

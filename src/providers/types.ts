@@ -3,6 +3,7 @@ export interface ChatMessage {
   content: string;
   tool_call_id?: string;
   name?: string;
+  isError?: boolean;
 }
 
 export interface ToolCall {

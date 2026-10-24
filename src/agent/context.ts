@@ -39,8 +39,8 @@ export async function buildRepoContext(projectRoot: string): Promise<RepoContext
   };
 }
 
-async function gatherStructure(root: string, depth: number = 3): Promise<string> {
-  return findtopLevelDirs(root);
+async function gatherStructure(projectRoot: string, _depth: number = 3): Promise<string> {
+  return findTopLevelDirs(projectRoot);
 }
 
 function findTopLevelDirs(root: string): string {

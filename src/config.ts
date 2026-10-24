@@ -1,10 +1,4 @@
 import { config } from 'dotenv';
-import type { ParsedArgs } from 'dotenv';
-
-interface LoadedEnv {
-  parsed?: ParsedArgs | null;
-  error?: Error;
-}
 
 config();
 

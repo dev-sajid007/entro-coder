@@ -14,7 +14,7 @@ export interface ToolContext {
   projectRoot: string;
 }
 
-export function createTools(ctx: ToolContext): ToolExecutor[] {
+export function createTools(_ctx: ToolContext): ToolExecutor[] {
   return [
     {
       name: 'list_files',
@@ -166,7 +166,7 @@ export function createTools(ctx: ToolContext): ToolExecutor[] {
           required: ['pattern'],
         },
       },
-      async execute(args: unknown, context: ToolContext): Promise<string> {
+      async execute(args: unknown, _context: ToolContext): Promise<string> {
         const typed = args as { pattern: string; paths?: string; max_results?: number; file_pattern?: string };
         const results = search.searchCode({
           pattern: typed.pattern,

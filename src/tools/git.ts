@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { validatePath } from '../security.js';
 
 export interface GitDiffOptions {
   staged?: boolean;

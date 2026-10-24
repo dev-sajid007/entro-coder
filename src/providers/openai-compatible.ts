@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   LLMResponse,
   LLMProvider,
+  ToolCall,
   ToolDefinition,
 } from './types.js';
 
@@ -28,9 +29,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const openAIMessages = messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
-      tool_call_id: msg.tool_call_id,
-      name: msg.name,
-    }));
+      ...(msg.tool_call_id ? { tool_call_id: msg.tool_call_id } : {}),
+      ...(msg.name ? { name: msg.name } : {}),
+    })) as unknown as OpenAI.ChatCompletionMessageParam[];
 
     const toolParams: Record<string, unknown> = {};
     if (tools && tools.length > 0) {
