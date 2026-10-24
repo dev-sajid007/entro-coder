@@ -3,6 +3,9 @@ import * as filesystem from './filesystem.js';
 import * as search from './search.js';
 import * as shell from './shell.js';
 import * as git from './git.js';
+import * as gitops from './gitops.js';
+import type { ApprovalManager } from '../memory/approval.js';
+import type { Logger } from '../memory/journal.js';
 
 export interface ToolExecutor {
   name: string;
@@ -12,6 +15,8 @@ export interface ToolExecutor {
 
 export interface ToolContext {
   projectRoot: string;
+  approval?: ApprovalManager;
+  logger?: Logger;
 }
 
 export function createTools(_ctx: ToolContext): ToolExecutor[] {
@@ -37,16 +42,20 @@ export function createTools(_ctx: ToolContext): ToolExecutor[] {
               type: 'integer',
               description: 'Maximum depth for recursive listing',
             },
+            exclude_secrets: {
+              type: 'boolean',
+              description: 'Exclude secret/sensitive files (.env, .pem, etc.)',
+            },
           },
           required: ['path'],
         },
       },
       async execute(args: unknown, context: ToolContext): Promise<string> {
-        const typed = args as { path: string; recursive?: boolean; max_depth?: number };
-        const files = await filesystem.listFiles(
+        const typed = args as { path: string; recursive?: boolean; max_depth?: number; exclude_secrets?: boolean };
+        const files = filesystem.listFiles(
           typed.path,
           context.projectRoot,
-          { recursive: typed.recursive, maxDepth: typed.max_depth }
+          { recursive: typed.recursive, maxDepth: typed.max_depth, excludeSecrets: typed.exclude_secrets }
         );
         return files.length === 0
           ? 'No files found.'
@@ -102,8 +111,19 @@ export function createTools(_ctx: ToolContext): ToolExecutor[] {
       },
       async execute(args: unknown, context: ToolContext): Promise<string> {
         const typed = args as { path: string; content: string };
-        await filesystem.writeFile(typed.path, typed.content, context.projectRoot);
-        return `Successfully wrote ${typed.content.length} bytes to ${typed.path}`;
+        const result = await filesystem.writeFile(typed.path, typed.content, context.projectRoot);
+
+        if (context.approval) {
+          const secretCheck = (context.approval as ApprovalManager).shouldBlockFile?.(typed.path);
+          if (secretCheck) {
+            throw new Error(`Security: ${secretCheck}`);
+          }
+        }
+
+        const action = result.created ? 'Created' : 'Overwrote';
+        context.logger?.info(`${action}: ${typed.path}`, { bytes: result.bytesWritten });
+
+        return `${action} ${result.bytesWritten} bytes to ${typed.path}`;
       },
     },
     {
@@ -134,7 +154,39 @@ export function createTools(_ctx: ToolContext): ToolExecutor[] {
           typed.patch,
           context.projectRoot
         );
+        context.logger?.action('Applied patch', { file: typed.path, hunks_applied: result.hunksApplied });
         return `Patch applied: ${result.hunksApplied} hunks applied, ${result.hunksSkipped} skipped`;
+      },
+    },
+    {
+      name: 'generate_diff',
+      definition: {
+        name: 'generate_diff',
+        description:
+          'Generate a unified diff between original and new content.',
+        parameters: {
+          type: 'object',
+          properties: {
+            original: {
+              type: 'string',
+              description: 'Original file content',
+            },
+            new_content: {
+              type: 'string',
+              description: 'New file content',
+            },
+            file_path: {
+              type: 'string',
+              description: 'The file path for context',
+            },
+          },
+          required: ['original', 'new_content', 'file_path'],
+        },
+      },
+      async execute(args: unknown, _context: ToolContext): Promise<string> {
+        const typed = args as { original: string; new_content: string; file_path: string };
+        const diff = gitops.generateDiff(typed.original, typed.new_content, typed.file_path);
+        return diff || '(Files are identical — no changes needed)';
       },
     },
     {
@@ -202,9 +254,28 @@ export function createTools(_ctx: ToolContext): ToolExecutor[] {
       },
       async execute(args: unknown, context: ToolContext): Promise<string> {
         const typed = args as { command: string; timeout_ms?: number };
+
+        if (context.approval) {
+          const approval = await context.approval.requestApproval({
+            action: 'run_command',
+            description: `Execute: ${typed.command}`,
+            command: typed.command,
+            riskLevel: isHighRiskCommand(typed.command) ? 'high' : 'low',
+          });
+
+          if (!approval.granted) {
+            throw new Error(`Command denied by user: ${approval.reason}`);
+          }
+        }
+
         const result = await shell.runCommand(typed.command, {
           cwd: context.projectRoot,
           timeoutMs: typed.timeout_ms ?? 15000,
+        });
+
+        context.logger?.debug('Command executed', {
+          command: typed.command,
+          exitCode: result.exitCode,
         });
 
         const parts: string[] = [];
@@ -238,7 +309,96 @@ export function createTools(_ctx: ToolContext): ToolExecutor[] {
         return result.output;
       },
     },
+    {
+      name: 'git_status',
+      definition: {
+        name: 'git_status',
+        description:
+          'Show short git status of the repository.',
+        parameters: {},
+      },
+      async execute(_args: unknown, context: ToolContext): Promise<string> {
+        const result = gitops.gitStatusShort(context.projectRoot);
+        if (!result.output) return 'Repository clean — no changes.';
+        return result.output;
+      },
+    },
+    {
+      name: 'git_stage',
+      definition: {
+        name: 'git_stage',
+        description:
+          'Stage a file for commit using git add.',
+        parameters: {
+          type: 'object',
+          properties: {
+            file: {
+              type: 'string',
+              description: 'File path to stage',
+            },
+          },
+          required: ['file'],
+        },
+      },
+      async execute(args: unknown, context: ToolContext): Promise<string> {
+        const typed = args as { file: string };
+        const result = gitops.gitStage(typed.file, context.projectRoot);
+        return result.exitCode === 0
+          ? `Staged: ${typed.file}`
+          : `Failed to stage: ${result.output}`;
+      },
+    },
+    {
+      name: 'git_commit',
+      definition: {
+        name: 'git_commit',
+        description:
+          'Create a git commit with the given message.',
+        parameters: {
+          type: 'object',
+          properties: {
+            message: {
+              type: 'string',
+              description: 'Commit message',
+            },
+            all: {
+              type: 'boolean',
+              description: 'Stage all changed files before committing',
+            },
+          },
+          required: ['message'],
+        },
+      },
+      async execute(args: unknown, context: ToolContext): Promise<string> {
+        const typed = args as { message: string; all?: boolean };
+
+        if (context.approval) {
+          const approval = await context.approval.requestApproval({
+            action: 'other',
+            description: `Git commit: ${typed.message}`,
+            riskLevel: 'medium',
+          });
+
+          if (!approval.granted) {
+            throw new Error(`Commit denied by user: ${approval.reason}`);
+          }
+        }
+
+        const result = gitops.gitCommit(typed.message, context.projectRoot, { all: typed.all });
+        return result.exitCode === 0
+          ? `Committed: ${typed.message}`
+          : `Commit failed: ${result.output}`;
+      },
+    },
   ];
+}
+
+function isHighRiskCommand(cmd: string): boolean {
+  return /rm\s+(-rf|-fr)\b/i.test(cmd)
+    || /dd\s+if=/i.test(cmd)
+    || /\bsudo\b/i.test(cmd)
+    || /mkfs/i.test(cmd)
+    || /umount\s+-f/i.test(cmd);
 }
 
 export function getToolByName(tools: ToolExecutor[], name: string): ToolExecutor | undefined {

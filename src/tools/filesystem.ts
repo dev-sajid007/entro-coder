@@ -8,10 +8,40 @@ export interface ListFilesOptions {
   maxDepth?: number;
 }
 
+export interface FileFilterOptions {
+  excludeSecrets?: boolean;
+  excludeGenerated?: boolean;
+  excludePatterns?: string[];
+}
+
+const SECRET_PATTERNS = [
+  /\.env(\.|$)/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /\.secret(\.|$)/i,
+  /credentials/i,
+  /\.aws\//i,
+  /\.ssh\//i,
+  /\.gitconfig$/i,
+  /\.htpasswd$/i,
+  /\.pgpass$/i,
+];
+
+const GENERATED_PATTERNS = [
+  /\.(min\.|compiled|minified)\./i,
+  /\.bundle\./i,
+  /\.(map)$/i,
+  /\.generated\.\w+$/i,
+  /__pycache__/i,
+  /\.pyc$/i,
+  /node_modules\//i,
+  /\.git\//i,
+];
+
 export function listFiles(
   targetPath: string,
   projectRoot: string,
-  options?: ListFilesOptions
+  options?: ListFilesOptions & FileFilterOptions
 ): string[] {
   const error = validatePath(targetPath, projectRoot);
   if (error) throw new Error(`Security: ${error}`);
@@ -32,6 +62,13 @@ export function listFiles(
       if (entry.name.startsWith('.')) continue;
 
       const relPath = path.relative(projectRoot, path.join(dir, entry.name));
+      const isSecret = shouldExcludeFile(relPath, options);
+      const isGenerated = options?.excludeGenerated && GENERATED_PATTERNS.some((p) => p.test(relPath));
+
+      if (options?.excludeSecrets && isSecret) continue;
+      if (isGenerated) continue;
+      if (options?.excludePatterns?.some((p) => relPath.includes(p))) continue;
+
       files.push(relPath);
 
       if (entry.isDirectory() && (options?.recursive ?? false)) {
@@ -42,6 +79,19 @@ export function listFiles(
 
   walk(fullPath, 0);
   return files.sort();
+}
+
+export function shouldExcludeFile(filePath: string, options?: FileFilterOptions): boolean {
+  if (options?.excludeSecrets && SECRET_PATTERNS.some((p) => p.test(filePath))) {
+    return true;
+  }
+  if (options?.excludeGenerated && GENERATED_PATTERNS.some((p) => p.test(filePath))) {
+    return true;
+  }
+  if (options?.excludePatterns?.some((p) => filePath.includes(p))) {
+    return true;
+  }
+  return false;
 }
 
 export async function readFile(
@@ -72,22 +122,42 @@ export async function readFile(
   return fs.readFileSync(fullPath, 'utf-8');
 }
 
+export interface WriteFileResult {
+  created: boolean;
+  overwritten: boolean;
+  bytesWritten: number;
+}
+
 export async function writeFile(
   filePath: string,
   content: string,
-  projectRoot: string
-): Promise<void> {
+  projectRoot: string,
+  maxSizeBytes: number = 500_000
+): Promise<WriteFileResult> {
   const error = validatePath(filePath, projectRoot);
   if (error) throw new Error(`Security: ${error}`);
 
+  if (content.length > maxSizeBytes) {
+    throw new Error(
+      `Content too large (${content.length} bytes, max ${maxSizeBytes})`
+    );
+  }
+
   const fullPath = path.resolve(projectRoot, filePath);
   const dir = path.dirname(fullPath);
+  const created = !fs.existsSync(fullPath);
 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   fs.writeFileSync(fullPath, content, 'utf-8');
+
+  return {
+    created,
+    overwritten: !created,
+    bytesWritten: content.length,
+  };
 }
 
 export async function applyPatch(

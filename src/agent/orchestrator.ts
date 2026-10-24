@@ -8,7 +8,7 @@ import { createSystemPrompt, createUserPrompt } from './prompts.js';
 export interface OrchestratorOptions {
   provider: LLMProvider;
   tools: ToolExecutor[];
-  projectRoot: string;
+  context: ToolContext;
   maxSteps?: number;
 }
 
@@ -31,7 +31,7 @@ export class AgentOrchestrator {
   constructor(options: OrchestratorOptions) {
     this.provider = options.provider;
     this.tools = options.tools;
-    this.context = { projectRoot: options.projectRoot };
+    this.context = options.context;
     this.maxSteps = options.maxSteps ?? CONFIG.agent.maxSteps;
   }
 

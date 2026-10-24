@@ -5,8 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG } from './config.js';
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
-import { createTools } from './tools/registry.js';
-import { AgentOrchestrator } from './agent/orchestrator.js';
+import { createTools, type ToolContext } from './tools/registry.js';
+import { AgentOrchestrator, type AgentResult } from './agent/orchestrator.js';
+import { createLogger } from './memory/journal.js';
+import { ApprovalManager } from './memory/approval.js';
+import * as gitops from './tools/gitops.js';
 
 const program = new Command();
 
@@ -19,16 +22,33 @@ interface RunOptions {
   repo?: string;
   task: string;
   steps?: number;
+  noApprove?: boolean;
 }
+
+// Global cancellation support
+let cancelled = false;
+process.on('SIGINT', () => {
+  cancelled = true;
+  console.log('\n\n⚡ Interrupted by user.');
+});
 
 program
   .command('run <task>')
   .description('Execute a coding task in the specified repository')
   .option('-r, --repo <path>', 'Project directory (default: current directory)', '.')
   .option('-s, --steps <n>', 'Maximum agent steps', String(CONFIG.agent.maxSteps))
+  .option('--no-approve', 'Disable approval prompts (auto-approve for low risk)')
   .action(async (task: string, opts: Partial<RunOptions>) => {
     const repoPath = path.resolve(opts.repo || '.');
     const projectRoot = validateProject(repoPath);
+
+    if (cancelled) return;
+
+    // Stash any existing uncommitted changes to preserve them
+    const backupResult = gitops.stashAndRestore(projectRoot);
+    if (backupResult.restored) {
+      console.log(`\nBacked up existing changes, will restore later.`);
+    }
 
     console.log(`\n${'='.repeat(60)}`);
     console.log('  EntroCoder v0.1.0');
@@ -47,16 +67,29 @@ program
         CONFIG.llm.model
       );
 
-      const tools = createTools({ projectRoot });
+      const logger = createLogger(projectRoot);
+      const approvalManager = new ApprovalManager(logger, {
+        nonInteractive: opts.noApprove ?? !process.stdout.isTTY,
+      });
+
+      const context: ToolContext = {
+        projectRoot,
+        approval: approvalManager,
+        logger,
+      };
+
+      const tools = createTools(context);
 
       const orchestrator = new AgentOrchestrator({
         provider,
         tools,
-        projectRoot,
+        context,
         maxSteps: Number(opts.steps) ?? CONFIG.agent.maxSteps,
       });
 
-      const result = await orchestrator.run(task);
+      const result: AgentResult = await orchestrator.run(task);
+
+      logger.flushToFile();
 
       console.log('\n' + '-'.repeat(60));
       console.log('\n  AGENT RESULT\n');
@@ -64,11 +97,20 @@ program
       console.log('\n' + '-'.repeat(60));
       console.log(`\nSteps completed: ${result.totalSteps}`);
       if (result.errors) console.log('⚠ Some steps encountered errors');
-      console.log();
+
+      // Show diff summary
+      const status = gitops.gitStatusShort(projectRoot);
+      if (status.output) {
+        console.log(`\nGit status after execution:\n${status.output}\n`);
+      }
+
+      console.log(`Logs saved to: .entro/logs.jsonl\n`);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`\nError: ${message}\n`);
       process.exitCode = 1;
+    } finally {
+      cancelled = false;
     }
   });
 
@@ -78,7 +120,8 @@ program
   .argument('<path>', 'Project directory')
   .option('--files', 'Show full file listing')
   .option('--git-status', 'Show git status')
-  .action((repoPath: string, opts: { files?: boolean; gitStatus?: boolean }) => {
+  .option('--exclude-secrets', 'Exclude secret files from listing')
+  .action((repoPath: string, opts: { files?: boolean; gitStatus?: boolean; excludeSecrets?: boolean }) => {
     const resolved = path.resolve(repoPath);
     const projectRoot = validateProject(resolved);
 
@@ -102,7 +145,6 @@ program
     }
 
     if (opts.gitStatus) {
-      // We'll use simple execFileSync here since we already have git module
       import('./tools/git.js').then((git) => {
         const status = git.gitStatus(projectRoot);
         if (status.output) {
@@ -123,8 +165,8 @@ program
     const resolved = path.resolve(repoPath || '.');
     const projectRoot = validateProject(resolved);
 
-    import('./tools/git.js').then((git) => {
-      const result = git.gitDiff(projectRoot, { staged: opts?.staged });
+    import('./tools/git.js').then((gitTool) => {
+      const result = gitTool.gitDiff(projectRoot, { staged: opts?.staged });
       if (result.output) {
         console.log(result.output);
       } else {

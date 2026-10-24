@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AgentOrchestrator, type AgentResult } from '../src/agent/orchestrator.js';
 import type { LLMProvider, LLMResponse, ChatMessage, ToolCall } from '../src/providers/types.js';
-import type { ToolExecutor } from '../src/tools/registry.js';
+import type { ToolExecutor, ToolContext } from '../src/tools/registry.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -36,6 +36,10 @@ describe('AgentOrchestrator', () => {
     };
   }
 
+  function createContext(): ToolContext {
+    return { projectRoot: mockFsDir };
+  }
+
   it('completes without tool calls when LLM returns plain text', async () => {
     const provider = createMockProvider(async (msgs) => ({
       message: { role: 'assistant', content: 'Task complete. Done.' },
@@ -44,7 +48,7 @@ describe('AgentOrchestrator', () => {
     const orchestrator = new AgentOrchestrator({
       provider,
       tools: [],
-      projectRoot: mockFsDir,
+      context: createContext(),
       maxSteps: 3,
     });
 
@@ -65,7 +69,7 @@ describe('AgentOrchestrator', () => {
     const orchestrator = new AgentOrchestrator({
       provider,
       tools: [],
-      projectRoot: mockFsDir,
+      context: createContext(),
       maxSteps: 2,
     });
 
@@ -104,7 +108,7 @@ describe('AgentOrchestrator', () => {
     const orchestrator = new AgentOrchestrator({
       provider,
       tools: [tool],
-      projectRoot: mockFsDir,
+      context: createContext(),
       maxSteps: 3,
     });
 
